@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -8,6 +7,9 @@ use tauri::{
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LogLine {
@@ -52,7 +54,8 @@ fn resolve_script(app: &AppHandle) -> Result<String, String> {
         .resolve("setup-agent.sh", tauri::path::BaseDirectory::Resource)
         .map_err(|e| format!("Failed to resolve resource path: {}", e))?;
 
-    // Make the script executable (rwxr-xr-x)
+    // Make the script executable on Unix (rwxr-xr-x)
+    #[cfg(unix)]
     std::fs::set_permissions(&resource_path, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("Failed to set script permissions: {}", e))?;
 
@@ -93,21 +96,39 @@ async fn run_install(
         args.push("-t".to_string());
     }
 
-    // On Linux, use pkexec for a GUI sudo prompt.
-    // pkexec does not preserve environment variables, so we pass them explicitly
-    // via `env VAR=value` prepended to the command.
-    let mut cmd = Command::new("pkexec");
-    cmd.arg("env")
-        .arg(format!("WAZUH_MANAGER={}", &config.wazuh_manager))
-        .arg(format!("WAZUH_AGENT_VERSION={}", &config.wazuh_agent_version))
-        .arg(format!("WAZUH_AGENT_NAME={}", &config.wazuh_agent_name))
-        .arg(format!("LOG_LEVEL={}", &config.log_level))
-        .arg("bash")
-        .arg(&resolved_path)
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    // On Linux/macOS use pkexec for a GUI privilege prompt.
+    // On Windows, run bash directly (WSL or Git Bash) — the script handles elevation internally.
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("pkexec");
+        c.arg("env")
+            .arg(format!("WAZUH_MANAGER={}", &config.wazuh_manager))
+            .arg(format!("WAZUH_AGENT_VERSION={}", &config.wazuh_agent_version))
+            .arg(format!("WAZUH_AGENT_NAME={}", &config.wazuh_agent_name))
+            .arg(format!("LOG_LEVEL={}", &config.log_level))
+            .arg("bash")
+            .arg(&resolved_path)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        c
+    };
+
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("bash");
+        c.arg(&resolved_path)
+            .args(&args)
+            .env("WAZUH_MANAGER", &config.wazuh_manager)
+            .env("WAZUH_AGENT_VERSION", &config.wazuh_agent_version)
+            .env("WAZUH_AGENT_NAME", &config.wazuh_agent_name)
+            .env("LOG_LEVEL", &config.log_level)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        c
+    };
 
     let mut child = cmd
         .spawn()
