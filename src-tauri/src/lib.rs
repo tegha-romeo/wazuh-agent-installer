@@ -8,9 +8,6 @@ use tauri::{
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LogLine {
     pub line: String,
@@ -46,26 +43,43 @@ fn classify_line(line: &str) -> &'static str {
     }
 }
 
-/// Resolve the bundled setup-agent.sh path, copy it to a temp file,
-/// ensure it is executable, and return the temp path.
-/// This avoids permission errors when the bundled resource is in a read-only system directory.
+/// Resolve the bundled setup-agent.sh path and return it as a String.
+/// When installed from a .deb the script is already executable.
+/// When running in dev mode we copy to /tmp first to ensure it's writable.
 fn resolve_script(app: &AppHandle) -> Result<String, String> {
     let resource_path = app
         .path()
         .resolve("setup-agent.sh", tauri::path::BaseDirectory::Resource)
         .map_err(|e| format!("Failed to resolve resource path: {}", e))?;
 
-    // Copy to a writable temp location so we can chmod it
-    let tmp_path = std::env::temp_dir().join("wazuh-setup-agent.sh");
-    std::fs::copy(&resource_path, &tmp_path)
-        .map_err(|e| format!("Failed to copy script to temp dir: {}", e))?;
-
-    // Make the copy executable (rwxr-xr-x)
+    // If the file is already executable, use it directly (installed .deb case)
     #[cfg(unix)]
-    std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
-        .map_err(|e| format!("Failed to set script permissions: {}", e))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&resource_path) {
+            let mode = meta.permissions().mode();
+            if mode & 0o111 != 0 {
+                // Already executable — use in place
+                return resource_path
+                    .to_str()
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| "Script path contains invalid UTF-8".to_string());
+            }
+        }
+        // Not executable — copy to /tmp and chmod (dev mode)
+        let tmp_path = std::env::temp_dir().join("wazuh-setup-agent.sh");
+        std::fs::copy(&resource_path, &tmp_path)
+            .map_err(|e| format!("Failed to copy script to temp dir: {}", e))?;
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("Failed to set script permissions: {}", e))?;
+        return tmp_path
+            .to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Script path contains invalid UTF-8".to_string());
+    }
 
-    tmp_path
+    #[cfg(not(unix))]
+    resource_path
         .to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| "Script path contains invalid UTF-8".to_string())
