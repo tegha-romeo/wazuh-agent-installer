@@ -1,0 +1,281 @@
+#!/bin/sh
+
+# Check if we're running in bash; if not, adjust behavior
+if [ -n "$BASH_VERSION" ]; then
+    set -euo pipefail
+else
+    set -eu
+fi
+
+# ==============================================================================
+# Default Configuration
+# ==============================================================================
+LOG_LEVEL=${LOG_LEVEL:-"INFO"}
+APP_NAME=${APP_NAME:-"wazuh-cert-oauth2-client"}
+WOPS_VERSION=${WOPS_VERSION:-"0.4.1"}
+WAZUH_YARA_VERSION=${WAZUH_YARA_VERSION:-"0.3.11"}
+WAZUH_SNORT_VERSION=${WAZUH_SNORT_VERSION:-"0.2.4"}
+WAZUH_SURICATA_VERSION=${WAZUH_SURICATA_VERSION:-"0.1.4"}
+
+# Define the OSSEC configuration path
+if [ "$(uname)" = "Darwin" ]; then
+    OSSEC_PATH="/Library/Ossec/etc"
+else
+    OSSEC_PATH="/var/ossec/etc"
+fi
+OSSEC_CONF_PATH="$OSSEC_PATH/ossec.conf"
+
+USER=${USER:-"root"}
+GROUP=${GROUP:-"wazuh"}
+
+WAZUH_MANAGER=${WAZUH_MANAGER:-'wazuh.example.com'}
+WAZUH_AGENT_VERSION=${WAZUH_AGENT_VERSION:-'4.13.1-1'}
+WAZUH_AGENT_STATUS_VERSION=${WAZUH_AGENT_STATUS_VERSION:-'0.4.1-rc4-user'}
+WAZUH_AGENT_NAME=${WAZUH_AGENT_NAME:-test-agent-name}
+WAZUH_AGENT_REPO_VERSION=${WAZUH_AGENT_REPO_VERSION:-'1.8.0'}
+
+# Installation choice variables
+IDS_ENGINE=""
+SURICATA_MODE=""
+INSTALL_TRIVY="FALSE"
+
+TMP_FOLDER="$(mktemp -d)"
+
+# Define text formatting
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[1;34m'
+BOLD='\033[1m'
+NORMAL='\033[0m'
+
+# ==============================================================================
+# Helper Functions
+# ==============================================================================
+
+log() {
+    local LEVEL="$1"
+    shift
+    local MESSAGE="$*"
+    local TIMESTAMP
+    TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+    echo -e "${TIMESTAMP} ${LEVEL} ${MESSAGE}"
+}
+
+info_message() { log "${BLUE}${BOLD}[===========> INFO]${NORMAL}" "$*"; }
+error_message() { log "${RED}${BOLD}[ERROR]${NORMAL}" "$*"; }
+success_message() { log "${GREEN}${BOLD}[SUCCESS]${NORMAL}" "$*"; }
+
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+maybe_sudo() {
+    if [ "$(id -u)" -ne 0 ]; then
+        if command_exists sudo; then
+            sudo "$@"
+        else
+            error_message "This script requires root privileges. Please run with sudo or as root."
+            exit 1
+        fi
+    else
+        "$@"
+    fi
+}
+
+cleanup() {
+    if [ -d "$TMP_FOLDER" ]; then
+        rm -rf "$TMP_FOLDER"
+    fi
+}
+trap cleanup EXIT
+
+help_message() {
+    echo -e "${BOLD}Wazuh Agent Comprehensive Installation Script${NORMAL}"
+    echo ""
+    echo -e "${BOLD}DESCRIPTION:${NORMAL}"
+    echo "  This script automates the full setup of a Wazuh agent and a suite of essential"
+    echo "  security integrations."
+    echo ""
+    echo -e "${BOLD}USAGE:${NORMAL}"
+    echo "  ./setup-agent.sh [-s <mode> | -n] [-t] [-h]"
+    echo ""
+    echo -e "${BOLD}OPTIONS:${NORMAL}"
+    echo -e "  ${YELLOW}-s <mode>${NORMAL}  Install Suricata. Mode: 'ids' or 'ips'."
+    echo -e "  ${YELLOW}-n${NORMAL}         Install Snort as the NIDS engine."
+    echo -e "  ${YELLOW}-t${NORMAL}         Optionally install Trivy for vulnerability scanning."
+    echo -e "  ${YELLOW}-h${NORMAL}         Display this help message and exit."
+}
+
+# ==============================================================================
+# Argument Parsing
+# ==============================================================================
+
+default_nids="suricata"
+
+while getopts "s:nth" opt; do
+    case ${opt} in
+        s)
+            IDS_ENGINE="suricata"
+            SURICATA_MODE=$(echo "$OPTARG" | tr '[:upper:]' '[:lower:]')
+            if [ "$SURICATA_MODE" != "ids" ] && [ "$SURICATA_MODE" != "ips" ]; then
+                error_message "Invalid mode for Suricata: '$OPTARG'. Must be 'ids' or 'ips'."
+                help_message
+                exit 1
+            fi
+            ;;
+        n) IDS_ENGINE="snort" ;;
+        t) INSTALL_TRIVY="TRUE" ;;
+        h) help_message; exit 0 ;;
+        \?) error_message "Invalid option: -$OPTARG" >&2; help_message; exit 1 ;;
+        :) error_message "Option -$OPTARG requires an argument." >&2; help_message; exit 1 ;;
+    esac
+done
+
+if [ -n "$SURICATA_MODE" ] && [ "$IDS_ENGINE" = "snort" ]; then
+    error_message "Invalid options: You cannot install both Suricata (-s) and Snort (-n)."
+    help_message
+    exit 1
+fi
+
+if [ -z "$IDS_ENGINE" ]; then
+    info_message "No NIDS selected, defaulting to: $default_nids."
+    IDS_ENGINE="$default_nids"
+fi
+
+if [ "$IDS_ENGINE" = "suricata" ] && [ -z "$SURICATA_MODE" ]; then
+    info_message "No mode specified for Suricata, defaulting to 'ids' mode."
+    SURICATA_MODE="ids"
+fi
+
+uninstall_snort() {
+    if command_exists snort; then
+        info_message "Uninstalling Snort..."
+        curl -SL -s "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-snort/refs/tags/v$WAZUH_SNORT_VERSION/scripts/uninstall.sh" > "$TMP_FOLDER/uninstall-snort.sh"
+        if ! (bash "$TMP_FOLDER/uninstall-snort.sh") 2>&1; then
+            error_message "Failed to uninstall 'snort'"
+            exit 1
+        fi
+    fi
+}
+
+uninstall_suricata() {
+    if command_exists suricata; then
+        info_message "Uninstalling Suricata..."
+        curl -SL -s "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-suricata/refs/tags/v$WAZUH_SURICATA_VERSION/scripts/uninstall.sh" > "$TMP_FOLDER/uninstall-suricata.sh"
+        if ! (bash "$TMP_FOLDER/uninstall-suricata.sh") 2>&1; then
+            error_message "Failed to uninstall 'suricata'"
+            exit 1
+        fi
+    fi
+}
+
+# ==============================================================================
+# Main Installation Logic
+# ==============================================================================
+
+info_message "Starting setup. Using temporary directory: \"$TMP_FOLDER\""
+
+info_message "Downloading core component scripts..."
+curl -SL -s "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-agent/refs/tags/v$WAZUH_AGENT_REPO_VERSION/scripts/deps.sh" > "$TMP_FOLDER/install-deps.sh"
+curl -SL -s "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-agent/refs/heads/main/scripts/install.sh" > "$TMP_FOLDER/install-wazuh-agent.sh"
+curl -SL -s "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-cert-oauth2/refs/tags/v$WOPS_VERSION/scripts/install.sh" > "$TMP_FOLDER/install-wazuh-cert-oauth2.sh"
+curl -SL -s "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-agent-status/refs/tags/v$WAZUH_AGENT_STATUS_VERSION/scripts/install.sh" > "$TMP_FOLDER/install-wazuh-agent-status.sh"
+curl -SL -s "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-yara/refs/tags/v$WAZUH_YARA_VERSION/scripts/install.sh" > "$TMP_FOLDER/install-yara.sh"
+
+info_message "Installing dependencies"
+if ! (bash "$TMP_FOLDER/install-deps.sh") 2>&1; then
+    error_message "Failed to install dependencies"
+    exit 1
+fi
+
+info_message "Installing Wazuh agent"
+if ! (maybe_sudo env LOG_LEVEL="$LOG_LEVEL" OSSEC_CONF_PATH=$OSSEC_CONF_PATH WAZUH_MANAGER="$WAZUH_MANAGER" WAZUH_AGENT_VERSION="$WAZUH_AGENT_VERSION" bash "$TMP_FOLDER/install-wazuh-agent.sh") 2>&1; then
+    error_message "Failed to install wazuh-agent"
+    exit 1
+fi
+
+info_message "Installing wazuh-cert-oauth2-client"
+if ! (maybe_sudo env LOG_LEVEL="$LOG_LEVEL" OSSEC_CONF_PATH=$OSSEC_CONF_PATH APP_NAME="$APP_NAME" WOPS_VERSION="$WOPS_VERSION" bash "$TMP_FOLDER/install-wazuh-cert-oauth2.sh") 2>&1; then
+    error_message "Failed to install 'wazuh-cert-oauth2-client'"
+    exit 1
+fi
+
+info_message "Installing wazuh-agent-status"
+if ! (maybe_sudo env WAZUH_MANAGER="$WAZUH_MANAGER" bash "$TMP_FOLDER/install-wazuh-agent-status.sh") 2>&1; then
+    error_message "Failed to install 'wazuh-agent-status'"
+    exit 1
+fi
+
+info_message "Installing yara"
+if ! (LOG_LEVEL="$LOG_LEVEL" OSSEC_CONF_PATH=$OSSEC_CONF_PATH bash "$TMP_FOLDER/install-yara.sh") 2>&1; then
+    error_message "Failed to install 'yara'"
+    exit 1
+fi
+
+if [ "$IDS_ENGINE" = "suricata" ]; then
+    uninstall_snort
+    info_message "Installing Suricata in ${SURICATA_MODE} mode..."
+    curl -sL "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-suricata/v$WAZUH_SURICATA_VERSION/scripts/install.sh" > "$TMP_FOLDER/install-suricata.sh"
+    if ! (bash "$TMP_FOLDER/install-suricata.sh" --mode "$SURICATA_MODE") 2>&1; then
+        error_message "Failed to install 'suricata'"
+        exit 1
+    fi
+elif [ "$IDS_ENGINE" = "snort" ]; then
+    uninstall_suricata
+    info_message "Installing Snort..."
+    curl -SL -s "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-snort/refs/tags/v$WAZUH_SNORT_VERSION/scripts/install.sh" > "$TMP_FOLDER/install-snort.sh"
+    if ! (env LOG_LEVEL="$LOG_LEVEL" OSSEC_CONF_PATH="$OSSEC_CONF_PATH" bash "$TMP_FOLDER/install-snort.sh") 2>&1; then
+        error_message "Failed to install 'snort'"
+        exit 1
+    fi
+fi
+
+if [ "$INSTALL_TRIVY" = "TRUE" ]; then
+    info_message "Installing Trivy..."
+    curl -SL -s "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-trivy/main/install.sh" > "$TMP_FOLDER/install-trivy.sh"
+    if ! (bash "$TMP_FOLDER/install-trivy.sh") 2>&1; then
+        error_message "Failed to install trivy"
+        exit 1
+    fi
+fi
+
+info_message "Installing USB DLP Active Response scripts..."
+
+if [ "$(uname)" = "Darwin" ]; then
+    AR_BIN_DIR="/Library/Ossec/active-response/bin"
+else
+    AR_BIN_DIR="/var/ossec/active-response/bin"
+fi
+
+maybe_sudo mkdir -p "$AR_BIN_DIR"
+
+USB_DLP_BASE_URL="https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-agent/refs/tags/v$WAZUH_AGENT_REPO_VERSION/files/active-response"
+
+if [ "$(uname)" = "Darwin" ]; then
+    info_message "Installing macOS USB DLP scripts..."
+    curl -SL -s "$USB_DLP_BASE_URL/disable-usb-storage-macos.sh" -o "$TMP_FOLDER/disable-usb-storage-macos.sh"
+    curl -SL -s "$USB_DLP_BASE_URL/alert-usb-hid.sh" -o "$TMP_FOLDER/alert-usb-hid.sh"
+    maybe_sudo cp "$TMP_FOLDER/disable-usb-storage-macos.sh" "$AR_BIN_DIR/"
+    maybe_sudo cp "$TMP_FOLDER/alert-usb-hid.sh" "$AR_BIN_DIR/"
+    maybe_sudo chown root:wazuh "$AR_BIN_DIR/disable-usb-storage-macos.sh" "$AR_BIN_DIR/alert-usb-hid.sh"
+    maybe_sudo chmod 750 "$AR_BIN_DIR/disable-usb-storage-macos.sh" "$AR_BIN_DIR/alert-usb-hid.sh"
+else
+    info_message "Installing Linux USB DLP scripts..."
+    curl -SL -s "$USB_DLP_BASE_URL/disable-usb-storage.sh" -o "$TMP_FOLDER/disable-usb-storage.sh"
+    curl -SL -s "$USB_DLP_BASE_URL/alert-usb-hid.sh" -o "$TMP_FOLDER/alert-usb-hid.sh"
+    maybe_sudo cp "$TMP_FOLDER/disable-usb-storage.sh" "$AR_BIN_DIR/"
+    maybe_sudo cp "$TMP_FOLDER/alert-usb-hid.sh" "$AR_BIN_DIR/"
+    maybe_sudo chown root:wazuh "$AR_BIN_DIR/disable-usb-storage.sh" "$AR_BIN_DIR/alert-usb-hid.sh"
+    maybe_sudo chmod 750 "$AR_BIN_DIR/disable-usb-storage.sh" "$AR_BIN_DIR/alert-usb-hid.sh"
+fi
+
+success_message "USB DLP Active Response scripts installed successfully."
+
+info_message "Downloading version file..."
+if ! (maybe_sudo curl -SL -s "https://raw.githubusercontent.com/ADORSYS-GIS/wazuh-agent/refs/heads/main/version.txt" -o "$OSSEC_PATH/version.txt") 2>&1; then
+    error_message "Failed to download version file"
+    exit 1
+fi
+
+success_message "Wazuh setup has been completed successfully."
