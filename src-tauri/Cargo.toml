@@ -1,5 +1,5 @@
 [package]
-name = "wazuh-setup-agent"
+name = "wazuh-agent-installer"
 version = "1.0.0"
 description = "Wazuh Agent Setup Installer"
 authors = ["Adorsys GIS"]

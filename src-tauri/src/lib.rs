@@ -46,20 +46,26 @@ fn classify_line(line: &str) -> &'static str {
     }
 }
 
-/// Resolve the bundled setup-agent.sh path and ensure it is executable.
-/// Returns the path as a String.
+/// Resolve the bundled setup-agent.sh path, copy it to a temp file,
+/// ensure it is executable, and return the temp path.
+/// This avoids permission errors when the bundled resource is in a read-only system directory.
 fn resolve_script(app: &AppHandle) -> Result<String, String> {
     let resource_path = app
         .path()
         .resolve("setup-agent.sh", tauri::path::BaseDirectory::Resource)
         .map_err(|e| format!("Failed to resolve resource path: {}", e))?;
 
-    // Make the script executable on Unix (rwxr-xr-x)
+    // Copy to a writable temp location so we can chmod it
+    let tmp_path = std::env::temp_dir().join("wazuh-setup-agent.sh");
+    std::fs::copy(&resource_path, &tmp_path)
+        .map_err(|e| format!("Failed to copy script to temp dir: {}", e))?;
+
+    // Make the copy executable (rwxr-xr-x)
     #[cfg(unix)]
-    std::fs::set_permissions(&resource_path, std::fs::Permissions::from_mode(0o755))
+    std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("Failed to set script permissions: {}", e))?;
 
-    resource_path
+    tmp_path
         .to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| "Script path contains invalid UTF-8".to_string())
