@@ -3,7 +3,6 @@
 // ============================================================
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
-const { resolveResource } = window.__TAURI__.path;
 
 // ---- State ----
 let currentStep = 0;
@@ -19,15 +18,30 @@ const btnBack = document.getElementById('btn-back');
 const footerHint = document.getElementById('footer-hint');
 
 // Config inputs
-const elManager = document.getElementById('wazuh-manager');
-const elAgentName = document.getElementById('agent-name');
-const elAgentVersion = document.getElementById('agent-version');
-const elLogLevel = document.getElementById('log-level');
+const elManagerSelect = document.getElementById('wazuh-manager');
+const elManagerCustom = document.getElementById('wazuh-manager-custom');
+const AGENT_VERSION = '4.14.1-1'; // fixed — not user-editable
 const elTrivy = document.getElementById('install-trivy');
 
-// IDS radio cards
-const rcSuricata = document.getElementById('rc-suricata');
-const rcSnort = document.getElementById('rc-snort');
+// Show/hide custom input when "Other" is selected
+elManagerSelect.addEventListener('change', () => {
+  if (elManagerSelect.value === 'other') {
+    elManagerCustom.style.display = 'block';
+    elManagerCustom.focus();
+  } else {
+    elManagerCustom.style.display = 'none';
+    elManagerCustom.value = '';
+  }
+});
+
+function getManagerValue() {
+  if (elManagerSelect.value === 'other') {
+    return elManagerCustom.value.trim();
+  }
+  return elManagerSelect.value.trim();
+}
+
+// IDS mode pills
 const suricataModeSection = document.getElementById('suricata-mode-section');
 const suricataModePills = document.querySelectorAll('#suricata-mode-group .pill');
 
@@ -38,14 +52,13 @@ const statusBanner = document.getElementById('status-banner');
 
 // ---- Helpers ----
 function getConfig() {
-  const idsRadio = document.querySelector('input[name="ids"]:checked');
   const selectedModePill = document.querySelector('#suricata-mode-group .pill.selected');
   return {
-    wazuh_manager: elManager.value.trim(),
-    wazuh_agent_name: elAgentName.value.trim(),
-    wazuh_agent_version: elAgentVersion.value.trim(),
-    log_level: elLogLevel.value.trim() || 'INFO',
-    ids_engine: idsRadio ? idsRadio.value : 'suricata',
+    wazuh_manager: getManagerValue(),
+    wazuh_agent_name: 'wazuh-agent',
+    wazuh_agent_version: AGENT_VERSION,
+    log_level: 'INFO',
+    ids_engine: 'suricata',
     suricata_mode: selectedModePill ? selectedModePill.dataset.mode : 'ids',
     install_trivy: elTrivy.checked,
   };
@@ -105,10 +118,8 @@ function populateSummary() {
   const list = document.getElementById('summary-list');
   const items = [
     ['Wazuh Manager', cfg.wazuh_manager],
-    ['Agent Name', cfg.wazuh_agent_name],
     ['Agent Version', cfg.wazuh_agent_version],
-    ['Log Level', cfg.log_level],
-    ['IDS Engine', cfg.ids_engine === 'suricata' ? `Suricata (${cfg.suricata_mode.toUpperCase()})` : 'Snort'],
+    ['IDS Engine', `Suricata (${cfg.suricata_mode.toUpperCase()})`],
     ['Install Trivy', cfg.install_trivy ? 'Yes' : 'No'],
     ['Core Components', 'Agent, Cert-OAuth2, Agent Status, Yara, USB DLP'],
   ];
@@ -117,22 +128,8 @@ function populateSummary() {
     .join('');
 }
 
-// ---- IDS Radio Card Logic ----
+// ---- IDS Mode Pills ----
 function setupRadioCards() {
-  rcSuricata.addEventListener('click', () => {
-    rcSuricata.classList.add('selected');
-    rcSnort.classList.remove('selected');
-    rcSuricata.querySelector('input').checked = true;
-    suricataModeSection.classList.add('visible');
-  });
-
-  rcSnort.addEventListener('click', () => {
-    rcSnort.classList.add('selected');
-    rcSuricata.classList.remove('selected');
-    rcSnort.querySelector('input').checked = true;
-    suricataModeSection.classList.remove('visible');
-  });
-
   suricataModePills.forEach(pill => {
     pill.addEventListener('click', () => {
       suricataModePills.forEach(p => p.classList.remove('selected'));
@@ -180,23 +177,10 @@ async function startInstall() {
     appendLog(event.payload.line, event.payload.level);
   });
 
-  const unlistenDone = await listen('install-done', (event) => {
-    // handled after invoke returns
-  });
-
   try {
-    // Resolve the bundled script path
-    let scriptPath;
-    try {
-      scriptPath = await resolveResource('setup-agent.sh');
-    } catch {
-      // Fallback: use relative path from the app binary
-      scriptPath = './setup-agent.sh';
-    }
-
     const result = await invoke('run_install', {
       config: cfg,
-      scriptPath: scriptPath,
+      scriptPath: null,
     });
 
     if (result.success) {
@@ -214,12 +198,10 @@ async function startInstall() {
   }
 
   unlistenLog();
-  unlistenDone();
   isInstalling = false;
 }
 
 function showResult(success, message) {
-  const installCard = document.getElementById('install-card');
   const resultScreen = document.getElementById('result-screen');
   const resultIcon = document.getElementById('result-icon');
   const resultTitle = document.getElementById('result-title');
@@ -238,14 +220,19 @@ function showResult(success, message) {
 // ---- Validation ----
 function validateStep(step) {
   if (step === 0) {
-    if (!elManager.value.trim()) {
-      elManager.focus();
+    const manager = getManagerValue();
+    if (!manager) {
+      elManagerSelect.focus();
+      elManagerSelect.style.borderColor = 'var(--status-error)';
       return false;
     }
-    if (!elAgentName.value.trim()) {
-      elAgentName.focus();
+    elManagerSelect.style.borderColor = '';
+    if (elManagerSelect.value === 'other' && !elManagerCustom.value.trim()) {
+      elManagerCustom.focus();
+      elManagerCustom.style.borderColor = 'var(--status-error)';
       return false;
     }
+    elManagerCustom.style.borderColor = '';
   }
   return true;
 }

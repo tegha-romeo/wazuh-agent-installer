@@ -301,6 +301,40 @@ html, body {
   color: var(--text-muted);
 }
 
+/* ---- Select dropdown ---- */
+.form-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b95a5' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  padding-right: 36px;
+  cursor: pointer;
+}
+
+.form-select option {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+/* ---- Static (read-only) field ---- */
+.form-static {
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 13.5px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  letter-spacing: 0.3px;
+  user-select: none;
+}
+
+/* ---- Single-column form row ---- */
+.form-row.single {
+  grid-template-columns: 1fr;
+}
+
 /* ---- Radio Cards ---- */
 .radio-group {
   display: grid;
@@ -331,6 +365,42 @@ html, body {
 
 .radio-card input[type="radio"] {
   display: none;
+}
+
+/* ---- Suricata static info card (Snort removed) ---- */
+.suricata-info-card {
+  position: relative;
+  background: var(--wz-blue-dim);
+  border: 2px solid var(--wz-blue);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+}
+
+.suricata-info-card .rc-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 3px;
+}
+
+.suricata-info-card .rc-desc {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.rc-badge-inline {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: var(--wz-teal-dim);
+  color: var(--wz-teal);
+  margin-bottom: 6px;
 }
 
 .radio-card .rc-title {
