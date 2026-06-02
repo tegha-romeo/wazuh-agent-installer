@@ -273,16 +273,25 @@ document.getElementById('btn-enroll')?.addEventListener('click', () => {
 });
 
 // Start Enrollment button on Enroll step
-document.getElementById('btn-start-enroll')?.addEventListener('click', async () => {
+async function runEnrollment() {
   const startArea = document.getElementById('enroll-start-area');
   const terminalArea = document.getElementById('enroll-terminal-area');
   const enrollTerminal = document.getElementById('enroll-terminal');
-  const enrollPlaceholder = document.getElementById('enroll-terminal-placeholder');
   const enrollStatusBanner = document.getElementById('enroll-status-banner');
+  const retryBtn = document.getElementById('btn-retry-enroll');
+
+  // Reset terminal for re-runs
+  enrollTerminal.innerHTML = '<div class="terminal-placeholder" id="enroll-terminal-placeholder"><span class="spinner"></span> Running enrollment…</div>';
+  const enrollPlaceholder = document.getElementById('enroll-terminal-placeholder');
 
   // Switch to terminal view
   startArea.style.display = 'none';
   terminalArea.style.display = 'block';
+  if (retryBtn) retryBtn.style.display = 'none';
+
+  // Hide previous result
+  const enrollResultScreen = document.getElementById('enroll-result-screen');
+  enrollResultScreen.style.display = 'none';
 
   // Status
   enrollStatusBanner.className = 'status-banner visible running';
@@ -304,8 +313,8 @@ document.getElementById('btn-start-enroll')?.addEventListener('click', async () 
     enrollStatusBanner.className = `status-banner visible ${result.success ? 'success' : 'error'}`;
     enrollStatusBanner.innerHTML = `${result.success ? '✓' : '✕'} ${result.message}`;
 
-    // Show result card
-    const enrollResultScreen = document.getElementById('enroll-result-screen');
+    if (!result.success && retryBtn) retryBtn.style.display = 'flex';
+
     const enrollResultIcon = document.getElementById('enroll-result-icon');
     const enrollResultTitle = document.getElementById('enroll-result-title');
     const enrollResultDesc = document.getElementById('enroll-result-desc');
@@ -323,11 +332,15 @@ document.getElementById('btn-start-enroll')?.addEventListener('click', async () 
     const msg = typeof err === 'string' ? err : (err.message || 'Unknown error');
     enrollStatusBanner.className = 'status-banner visible error';
     enrollStatusBanner.innerHTML = `✕ Enrollment failed: ${msg}`;
+    if (retryBtn) retryBtn.style.display = 'flex';
     footerHint.textContent = 'Failed';
   }
 
   unlistenEnroll();
-});
+}
+
+document.getElementById('btn-start-enroll')?.addEventListener('click', runEnrollment);
+document.getElementById('btn-retry-enroll')?.addEventListener('click', runEnrollment);
 
 btnBack.addEventListener('click', () => {
   if (isInstalling) return;
