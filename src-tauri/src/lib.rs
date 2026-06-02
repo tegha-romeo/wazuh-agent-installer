@@ -275,8 +275,9 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            // Detect when the client is waiting for the code
-            let is_code_prompt = line.contains("Please copy this code")
+            // Detect when the client has printed the URL and is waiting for the code
+            let is_code_prompt = line.contains("Please open this URL in your browser")
+                || line.contains("Please copy this code")
                 || line.contains("paste it into your application")
                 || line.contains("Enter the code");
             let level = if is_code_prompt { "success" } else { classify_line(&line) };
@@ -293,7 +294,8 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
             // Also detect code prompt on stderr
-            let is_code_prompt = line.contains("Please copy this code")
+            let is_code_prompt = line.contains("Please open this URL in your browser")
+                || line.contains("Please copy this code")
                 || line.contains("paste it into your application")
                 || line.contains("Enter the code");
             let level = if is_code_prompt { "success" } else { "error" };
