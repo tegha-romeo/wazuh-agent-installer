@@ -226,8 +226,9 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
     #[cfg(unix)]
     let mut cmd = {
         let mut c = Command::new("pkexec");
-        c.arg("/var/ossec/bin/wazuh-cert-oauth2-client")
-            .arg("o-auth2")
+        c.arg("bash")
+            .arg("-c")
+            .arg("/var/ossec/bin/wazuh-cert-oauth2-client o-auth2")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
