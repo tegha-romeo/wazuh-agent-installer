@@ -222,6 +222,14 @@ async fn run_install(
 }
 
 #[tauri::command]
+async fn hide_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn validate_config(config: InstallConfig) -> Result<(), String> {
     if config.wazuh_manager.is_empty() {
         return Err("Wazuh Manager address is required".to_string());
@@ -249,7 +257,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![run_install, validate_config])
+        .invoke_handler(tauri::generate_handler![run_install, validate_config, hide_window])
         .setup(|app| {
             // ---- Build tray menu ----
             let show_item = MenuItem::with_id(app, "show", "Show Installer", true, None::<&str>)?;

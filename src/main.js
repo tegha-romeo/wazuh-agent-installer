@@ -257,9 +257,17 @@ btnBack.addEventListener('click', () => {
   if (currentStep > 0) goToStep(currentStep - 1);
 });
 
-document.getElementById('btn-close')?.addEventListener('click', () => {
-  // Hide to tray instead of closing
-  window.__TAURI__.window.getCurrent().hide();
+document.getElementById('btn-close')?.addEventListener('click', async () => {
+  try {
+    await invoke('hide_window');
+  } catch {
+    try {
+      const { getCurrentWindow } = window.__TAURI__.window;
+      await getCurrentWindow().hide();
+    } catch {
+      window.close();
+    }
+  }
 });
 
 // ---- Init ----
