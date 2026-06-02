@@ -307,6 +307,14 @@ async function runEnrollment() {
     enrollTerminal.scrollTop = enrollTerminal.scrollHeight;
   });
 
+  // Show code input when the client is waiting for the OAuth2 code
+  const unlistenNeedsCode = await listen('enroll-needs-code', () => {
+    const codeArea = document.getElementById('enroll-code-input-area');
+    if (codeArea) codeArea.style.display = 'block';
+    const codeInput = document.getElementById('enroll-code-input');
+    if (codeInput) codeInput.focus();
+  });
+
   try {
     const result = await invoke('run_enroll');
 
@@ -337,10 +345,42 @@ async function runEnrollment() {
   }
 
   unlistenEnroll();
+  unlistenNeedsCode();
 }
 
 document.getElementById('btn-start-enroll')?.addEventListener('click', runEnrollment);
 document.getElementById('btn-retry-enroll')?.addEventListener('click', runEnrollment);
+
+// Submit the OAuth2 code to the waiting enrollment process
+document.getElementById('btn-submit-code')?.addEventListener('click', async () => {
+  const codeInput = document.getElementById('enroll-code-input');
+  const code = codeInput?.value?.trim();
+  if (!code) return;
+  try {
+    await invoke('send_enroll_input', { code });
+    // Hide the input after submitting
+    const codeArea = document.getElementById('enroll-code-input-area');
+    if (codeArea) codeArea.style.display = 'none';
+    const enrollTerminal = document.getElementById('enroll-terminal');
+    const div = document.createElement('div');
+    div.className = 'log-line info';
+    div.textContent = `> Code submitted`;
+    enrollTerminal.appendChild(div);
+    enrollTerminal.scrollTop = enrollTerminal.scrollHeight;
+  } catch (err) {
+    const msg = typeof err === 'string' ? err : (err.message || 'Unknown error');
+    const enrollTerminal = document.getElementById('enroll-terminal');
+    const div = document.createElement('div');
+    div.className = 'log-line error';
+    div.textContent = `Failed to submit code: ${msg}`;
+    enrollTerminal.appendChild(div);
+  }
+});
+
+// Allow pressing Enter to submit the code
+document.getElementById('enroll-code-input')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('btn-submit-code')?.click();
+});
 
 btnBack.addEventListener('click', () => {
   if (isInstalling) return;

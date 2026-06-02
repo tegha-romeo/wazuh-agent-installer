@@ -203,6 +203,16 @@
                   <span class="spinner"></span> Running enrollment…
                 </div>
               </div>
+
+              <!-- Code input — shown when client is waiting for the OAuth2 code -->
+              <div id="enroll-code-input-area" style="display:none; margin-top:14px;">
+                <div class="form-label" style="margin-bottom:6px;">Paste the success code from your browser:</div>
+                <div style="display:flex; gap:8px;">
+                  <input class="form-input" type="text" id="enroll-code-input" placeholder="Paste code here…" style="flex:1;" />
+                  <button class="btn btn-primary" id="btn-submit-code" type="button">Submit</button>
+                </div>
+              </div>
+
               <div class="status-banner" id="enroll-status-banner"></div>
               <button class="btn btn-ghost" id="btn-retry-enroll" type="button" style="display:none; margin-top:12px; width:100%; justify-content:center;">↺ Re-run Enrollment</button>
             </div>

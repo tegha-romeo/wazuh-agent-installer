@@ -221,6 +221,14 @@ async fn run_install(
     })
 }
 
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::process::ChildStdin;
+use tokio::io::AsyncWriteExt;
+
+// Shared stdin handle for the enrollment process
+type EnrollStdin = Arc<Mutex<Option<ChildStdin>>>;
+
 #[tauri::command]
 async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
     #[cfg(unix)]
@@ -229,6 +237,7 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
         c.arg("bash")
             .arg("-c")
             .arg("/var/ossec/bin/wazuh-cert-oauth2-client o-auth2")
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -239,6 +248,7 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
     let mut cmd = {
         let mut c = Command::new("C:\\Program Files (x86)\\ossec-agent\\wazuh-cert-oauth2-client.exe");
         c.arg("o-auth2")
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -249,6 +259,14 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
         .spawn()
         .map_err(|e| format!("Failed to start enrollment: {}", e))?;
 
+    // Store stdin in app state so JS can send the OAuth2 code to it
+    let stdin = child.stdin.take();
+    let stdin_state: EnrollStdin = app.state::<EnrollStdin>().inner().clone();
+    {
+        let mut guard = stdin_state.lock().await;
+        *guard = stdin;
+    }
+
     let stdout = child.stdout.take().expect("Failed to capture stdout");
     let stderr = child.stderr.take().expect("Failed to capture stderr");
 
@@ -257,8 +275,15 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let level = classify_line(&line);
+            // Detect when the client is waiting for the code
+            let is_code_prompt = line.contains("Please copy this code")
+                || line.contains("paste it into your application")
+                || line.contains("Enter the code");
+            let level = if is_code_prompt { "success" } else { classify_line(&line) };
             let _ = app_stdout.emit("enroll-log", LogLine { line, level: level.to_string() });
+            if is_code_prompt {
+                let _ = app_stdout.emit("enroll-needs-code", true);
+            }
         }
     });
 
@@ -267,7 +292,15 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let _ = app_stderr.emit("enroll-log", LogLine { line, level: "error".to_string() });
+            // Also detect code prompt on stderr
+            let is_code_prompt = line.contains("Please copy this code")
+                || line.contains("paste it into your application")
+                || line.contains("Enter the code");
+            let level = if is_code_prompt { "success" } else { "error" };
+            let _ = app_stderr.emit("enroll-log", LogLine { line, level: level.to_string() });
+            if is_code_prompt {
+                let _ = app_stderr.emit("enroll-needs-code", true);
+            }
         }
     });
 
@@ -278,6 +311,12 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
 
     let _ = tokio::join!(stdout_task, stderr_task);
 
+    // Clear stdin state
+    {
+        let mut guard = stdin_state.lock().await;
+        *guard = None;
+    }
+
     let exit_code = status.code().unwrap_or(-1);
     let success = status.success();
     let message = if success {
@@ -287,6 +326,22 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
     };
 
     Ok(InstallResult { success, exit_code, message })
+}
+
+#[tauri::command]
+async fn send_enroll_input(app: AppHandle, code: String) -> Result<(), String> {
+    let stdin_state: EnrollStdin = app.state::<EnrollStdin>().inner().clone();
+    let mut guard = stdin_state.lock().await;
+    if let Some(ref mut stdin) = *guard {
+        let input = format!("{}\n", code.trim());
+        stdin.write_all(input.as_bytes()).await
+            .map_err(|e| format!("Failed to send code: {}", e))?;
+        stdin.flush().await
+            .map_err(|e| format!("Failed to flush stdin: {}", e))?;
+    } else {
+        return Err("No active enrollment process".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -325,7 +380,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![run_install, validate_config, hide_window, run_enroll])
+        .manage(EnrollStdin::new(Mutex::new(None)))
+        .invoke_handler(tauri::generate_handler![run_install, validate_config, hide_window, run_enroll, send_enroll_input])
         .setup(|app| {
             // ---- Build tray menu ----
             let show_item = MenuItem::with_id(app, "show", "Show Installer", true, None::<&str>)?;
