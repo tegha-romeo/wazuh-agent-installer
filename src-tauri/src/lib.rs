@@ -222,6 +222,73 @@ async fn run_install(
 }
 
 #[tauri::command]
+async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("pkexec");
+        c.arg("/var/ossec/bin/wazuh-cert-oauth2-client")
+            .arg("o-auth2")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        c
+    };
+
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("C:\\Program Files (x86)\\ossec-agent\\wazuh-cert-oauth2-client.exe");
+        c.arg("o-auth2")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        c
+    };
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to start enrollment: {}", e))?;
+
+    let stdout = child.stdout.take().expect("Failed to capture stdout");
+    let stderr = child.stderr.take().expect("Failed to capture stderr");
+
+    let app_stdout = app.clone();
+    let stdout_task = tokio::spawn(async move {
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let level = classify_line(&line);
+            let _ = app_stdout.emit("enroll-log", LogLine { line, level: level.to_string() });
+        }
+    });
+
+    let app_stderr = app.clone();
+    let stderr_task = tokio::spawn(async move {
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = app_stderr.emit("enroll-log", LogLine { line, level: "error".to_string() });
+        }
+    });
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("Enrollment process error: {}", e))?;
+
+    let _ = tokio::join!(stdout_task, stderr_task);
+
+    let exit_code = status.code().unwrap_or(-1);
+    let success = status.success();
+    let message = if success {
+        "Agent enrolled successfully!".to_string()
+    } else {
+        format!("Enrollment failed with exit code {}", exit_code)
+    };
+
+    Ok(InstallResult { success, exit_code, message })
+}
+
+#[tauri::command]
 async fn hide_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
         window.hide().map_err(|e| e.to_string())?;
@@ -257,7 +324,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![run_install, validate_config, hide_window])
+        .invoke_handler(tauri::generate_handler![run_install, validate_config, hide_window, run_enroll])
         .setup(|app| {
             // ---- Build tray menu ----
             let show_item = MenuItem::with_id(app, "show", "Show Installer", true, None::<&str>)?;

@@ -6,7 +6,7 @@ const { listen } = window.__TAURI__.event;
 
 // ---- State ----
 let currentStep = 0;
-const totalSteps = 4;
+const totalSteps = 5;
 let isInstalling = false;
 
 // ---- DOM refs ----
@@ -93,13 +93,19 @@ function goToStep(step) {
   btnBack.style.visibility = step === 0 ? 'hidden' : 'visible';
 
   if (step === totalSteps - 1) {
+    // Enroll step — hide footer buttons entirely, handled by in-panel buttons
+    btnNext.style.display = 'none';
+    btnBack.style.display = 'none';
+  } else if (step === 3) {
     btnNext.textContent = '⚡ Install';
-    btnNext.classList.remove('btn-primary');
-    btnNext.classList.add('btn-primary');
   } else if (step === 2) {
     btnNext.textContent = 'Start Install →';
+    btnNext.style.display = '';
+    btnBack.style.display = '';
   } else {
     btnNext.textContent = 'Next →';
+    btnNext.style.display = '';
+    btnBack.style.display = '';
   }
 
   if (isInstalling) {
@@ -111,6 +117,12 @@ function goToStep(step) {
 
   // Populate summary on step 2
   if (step === 2) populateSummary();
+
+  // Set manager label on enroll step
+  if (step === 4) {
+    const label = document.getElementById('enroll-manager-label');
+    if (label) label.textContent = getManagerValue() || 'your Wazuh manager';
+  }
 }
 
 function populateSummary() {
@@ -206,13 +218,18 @@ function showResult(success, message) {
   const resultIcon = document.getElementById('result-icon');
   const resultTitle = document.getElementById('result-title');
   const resultDesc = document.getElementById('result-desc');
+  const btnEnroll = document.getElementById('btn-enroll');
 
-  // Keep install card visible (logs), show result below
   resultScreen.style.display = 'block';
   resultIcon.className = `result-icon ${success ? 'success' : 'error'}`;
   resultIcon.textContent = success ? '✓' : '✕';
   resultTitle.textContent = success ? 'Installation Complete' : 'Installation Failed';
-  resultDesc.textContent = message;
+  resultDesc.textContent = success
+    ? 'The Wazuh Agent stack was installed successfully. Click below to enroll the agent.'
+    : message;
+
+  // Show/hide Enroll button based on success
+  if (btnEnroll) btnEnroll.style.display = success ? 'inline-flex' : 'none';
 
   footerHint.textContent = success ? 'Done' : 'Failed';
 }
@@ -245,11 +262,71 @@ btnNext.addEventListener('click', () => {
     if (!validateStep(currentStep)) return;
     goToStep(currentStep + 1);
   } else if (currentStep === 2) {
-    // Move to install panel first
     goToStep(3);
-    // Then start install
     startInstall();
   }
+});
+
+// Enroll button on Install result screen
+document.getElementById('btn-enroll')?.addEventListener('click', () => {
+  goToStep(4);
+});
+
+// Start Enrollment button on Enroll step
+document.getElementById('btn-start-enroll')?.addEventListener('click', async () => {
+  const startArea = document.getElementById('enroll-start-area');
+  const terminalArea = document.getElementById('enroll-terminal-area');
+  const enrollTerminal = document.getElementById('enroll-terminal');
+  const enrollPlaceholder = document.getElementById('enroll-terminal-placeholder');
+  const enrollStatusBanner = document.getElementById('enroll-status-banner');
+
+  // Switch to terminal view
+  startArea.style.display = 'none';
+  terminalArea.style.display = 'block';
+
+  // Status
+  enrollStatusBanner.className = 'status-banner visible running';
+  enrollStatusBanner.innerHTML = '<span class="spinner"></span> Enrollment in progress…';
+
+  // Listen for log lines
+  const unlistenEnroll = await listen('enroll-log', (event) => {
+    if (enrollPlaceholder && enrollPlaceholder.parentNode) enrollPlaceholder.remove();
+    const div = document.createElement('div');
+    div.className = `log-line ${event.payload.level}`;
+    div.textContent = stripAnsi(event.payload.line);
+    enrollTerminal.appendChild(div);
+    enrollTerminal.scrollTop = enrollTerminal.scrollHeight;
+  });
+
+  try {
+    const result = await invoke('run_enroll');
+
+    enrollStatusBanner.className = `status-banner visible ${result.success ? 'success' : 'error'}`;
+    enrollStatusBanner.innerHTML = `${result.success ? '✓' : '✕'} ${result.message}`;
+
+    // Show result card
+    const enrollResultScreen = document.getElementById('enroll-result-screen');
+    const enrollResultIcon = document.getElementById('enroll-result-icon');
+    const enrollResultTitle = document.getElementById('enroll-result-title');
+    const enrollResultDesc = document.getElementById('enroll-result-desc');
+
+    enrollResultScreen.style.display = 'block';
+    enrollResultIcon.className = `result-icon ${result.success ? 'success' : 'error'}`;
+    enrollResultIcon.textContent = result.success ? '✓' : '✕';
+    enrollResultTitle.textContent = result.success ? 'Enrollment Complete' : 'Enrollment Failed';
+    enrollResultDesc.textContent = result.success
+      ? 'The agent has been enrolled with the Wazuh manager.'
+      : result.message;
+
+    footerHint.textContent = result.success ? 'Enrolled' : 'Enrollment failed';
+  } catch (err) {
+    const msg = typeof err === 'string' ? err : (err.message || 'Unknown error');
+    enrollStatusBanner.className = 'status-banner visible error';
+    enrollStatusBanner.innerHTML = `✕ Enrollment failed: ${msg}`;
+    footerHint.textContent = 'Failed';
+  }
+
+  unlistenEnroll();
 });
 
 btnBack.addEventListener('click', () => {

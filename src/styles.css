@@ -783,3 +783,62 @@ html, body {
   text-align: center;
   margin-bottom: 24px;
 }
+
+/* ---- Enroll step ---- */
+.enroll-info-banner {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  background: var(--wz-blue-dim);
+  border: 1px solid rgba(26, 115, 232, 0.2);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  margin-bottom: 20px;
+}
+
+.enroll-info-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.enroll-info-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.enroll-info-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.enroll-info-text code {
+  background: rgba(255,255,255,0.07);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--wz-blue-light);
+}
+
+.btn-enroll-start {
+  width: 100%;
+  justify-content: center;
+  padding: 14px;
+  font-size: 14px;
+}
+
+#enroll-start-area {
+  margin-top: 4px;
+}
+
+/* ---- Result action buttons ---- */
+.result-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
