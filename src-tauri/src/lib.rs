@@ -6,7 +6,7 @@ use tauri::{
     AppHandle, Emitter, Manager,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{ChildStdin, Command};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LogLine {
@@ -223,35 +223,48 @@ async fn run_install(
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::process::ChildStdin;
 use tokio::io::AsyncWriteExt;
 
 // Shared stdin handle for the enrollment process
 type EnrollStdin = Arc<Mutex<Option<ChildStdin>>>;
 
 #[tauri::command]
-async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
+async fn run_enroll(app: AppHandle, issuer: String, endpoint: String, overwrite: bool) -> Result<InstallResult, String> {
+    // Use sudo for privilege elevation (allows OAuth2 callback unlike pkexec).
     #[cfg(unix)]
     let mut cmd = {
-        let mut c = Command::new("pkexec");
-        c.arg("bash")
-            .arg("-c")
-            .arg("/var/ossec/bin/wazuh-cert-oauth2-client o-auth2")
+        let mut c = Command::new("sudo");
+        c.arg("/var/ossec/bin/wazuh-cert-oauth2-client")
+            .arg("o-auth2")
+            .arg("--issuer")
+            .arg(&issuer)
+            .arg("--endpoint")
+            .arg(&endpoint)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if overwrite {
+            c.arg("--overwrite");
+        }
         c
     };
 
     #[cfg(windows)]
     let mut cmd = {
-        let mut c = Command::new("C:\\Program Files (x86)\\ossec-agent\\wazuh-cert-oauth2-client.exe");
+        let mut c = Command::new("/var/ossec/bin/wazuh-cert-oauth2-client");
         c.arg("o-auth2")
+            .arg("--issuer")
+            .arg(&issuer)
+            .arg("--endpoint")
+            .arg(&endpoint)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if overwrite {
+            c.arg("--overwrite");
+        }
         c
     };
 
@@ -269,6 +282,9 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
 
     let stdout = child.stdout.take().expect("Failed to capture stdout");
     let stderr = child.stderr.take().expect("Failed to capture stderr");
+
+    // Track whether an error line was seen in the output
+    let had_error_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let app_stdout = app.clone();
     let stdout_task = tokio::spawn(async move {
@@ -289,10 +305,15 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
     });
 
     let app_stderr = app.clone();
+    let had_error_flag_clone = had_error_flag.clone();
     let stderr_task = tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            // Track error lines
+            if line.to_lowercase().contains("error") || line.contains("invalid_grant") {
+                had_error_flag_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             // Also detect code prompt on stderr
             let is_code_prompt = line.contains("Please open this URL in your browser")
                 || line.contains("Please copy this code")
@@ -320,11 +341,14 @@ async fn run_enroll(app: AppHandle) -> Result<InstallResult, String> {
     }
 
     let exit_code = status.code().unwrap_or(-1);
-    let success = status.success();
+    // pkexec bash -c can return 0 even if inner command failed.
+    // Check error log state via a shared flag instead.
+    let had_error = had_error_flag.load(std::sync::atomic::Ordering::SeqCst);
+    let success = status.success() && !had_error;
     let message = if success {
         "Agent enrolled successfully!".to_string()
     } else {
-        format!("Enrollment failed with exit code {}", exit_code)
+        format!("Enrollment failed — check the log above for details")
     };
 
     Ok(InstallResult { success, exit_code, message })
